@@ -11,6 +11,7 @@ public class ShapeEditorHints : MonoBehaviour {
 	void Start() {
 		mat = new Material(Shader.Find("Sprites/Default"));
 		editor = ShapeEditor.instance;
+		Cursor.visible = false;
 	}
 
 	void OnPostRender() {
@@ -24,8 +25,8 @@ public class ShapeEditorHints : MonoBehaviour {
 		// Hover
 		GL.Color(Color.red);
 		if (editor.hovering) {
-			editor.hover.Highlight(radius);
-			editor.hover.executor.Select(editor.hover).Highlight(radius);
+			editor.hover.Draw(radius);
+			editor.hover.executor?.Despecify(editor.hover)?.Draw(radius);
 		} else {
 			CrossAt(editor.mousePosition, radius, 180);
 		}
@@ -33,18 +34,18 @@ public class ShapeEditorHints : MonoBehaviour {
 		// Held
 		if (editor.holding) {
 			GL.Color(editor.holdingReal && editor.selections.Count == 0 ? Color.green : Color.blue);
-			editor.held.Highlight(radius);
-			editor.held.executor.Select(editor.held).Highlight(radius);
+			editor.held.Draw(radius);
+			editor.held.executor?.Despecify(editor.held)?.Draw(radius);
 		}
 
 		// Drag origin
 		GL.Color(Color.blue);
-		editor.dragOrigin?.Highlight(radius);
+		editor.dragOrigin?.Draw(radius);
 
 		// Selected
 		GL.Color(Color.green);
 		foreach (IInstructibleElement element in editor.selections)
-			element.Highlight(radius);
+			element.Draw(radius);
 
 		GL.End();
 		GL.PopMatrix();

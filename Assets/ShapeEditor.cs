@@ -10,27 +10,27 @@ public class ShapeEditor : MonoBehaviour {
 
 	public static ShapeEditor instance;
 
+	// The state of the mouse
 	public string overInfo;
 	public string hoverInfo;
 	public string heldInfo;
 	public string selectionsInfo;
-
 	public IInstructiblePoint over; // over is the first hit
 	public IInstructiblePoint hover;// while hover is the first hit that's not held
 	public IInstructiblePoint held;
 	public IInstructiblePoint dragOrigin;
+	public List<IInstructibleElement> selections = new List<IInstructibleElement>();
 	public bool overing { get => over != null; }
 	public bool hovering { get => hover != null; }
 	public bool holding { get => held != null; }
-	public bool holdingReal { get => holding && !(held is WorldPoint && held.executor == null); }
+	public bool holdingReal { get => holding && held.executor != null; }
 	public bool dragging;
-	public List<IInstructibleElement> selections = new List<IInstructibleElement>();
 	public Vector2 mousePosition { get => Camera.main.ScreenToWorldPoint(Input.mousePosition); }
 	public Vector2 snappedMousePos { get => hover?.position ?? mousePosition; }
 
 	bool shifted { get => Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift); }
-	public float lastClick = 0;
 
+	public float lastClick = 0;
 	const float dragThresh = 0.2f;
 	const float dblClickMaxGap = 1; // max seconds between clicks to count as dbl click
 
@@ -50,7 +50,7 @@ public class ShapeEditor : MonoBehaviour {
 		selectionsInfo = selections.Count > 0 ? selections.Aggregate("", (str, elm) => str + ", " + Utility.Identify(elm)).Substring(2) : "";
 
 		if (Input.GetMouseButtonDown(0)) {
-			held = hover ?? new WorldPoint(null, mousePosition);
+			held = hover ?? new Point(null as Transform, mousePosition);
 			if (Time.time - lastClick <= dblClickMaxGap)
 				DblClick();
 		}
@@ -100,7 +100,7 @@ public class ShapeEditor : MonoBehaviour {
 	void Click() {
 		if (shifted) {
 			if (overing && over.Equals(held)) {
-				IInstructibleElement element = held?.executor?.Select(held);
+				IInstructibleElement element = held?.executor?.Despecify(held);
 				if (selections.Any((selection) => selection.Equals(element)))
 					selections.Remove(element);
 				else
@@ -119,7 +119,7 @@ public class ShapeEditor : MonoBehaviour {
 			foreach (IInstructibleElement selection in selections)
 				selection?.executor?.DblClick(selection);
 		} else {
-			held.executor.DblClick(held);
+			held.executor?.DblClick(held);
 		}
 	}
 
@@ -129,17 +129,17 @@ public class ShapeEditor : MonoBehaviour {
 	}
 
 	void StartDrag() { // held is guaranteed to be non-null, but not necessarily real
-		dragOrigin = new WorldPoint(null, held);
+		dragOrigin = new Point(null as Transform, held.position);
 		foreach (IInstructibleElement selection in selections)
 			selection?.executor?.StartDrag(selection);
 		if (selections.Count == 0)
-			held.executor?.StartDrag(held);
+			held.executor?.StartDrag(held.executor.Despecify(held));
 	}
 
 	void StopDrag() { // held is guaranteed to be non-null, but not necessarily real
 		foreach (IInstructibleElement selection in selections)
 			selection?.executor?.StopDrag(selection);
-		held.executor?.StopDrag(held);
+		held.executor?.StopDrag(held.executor.Despecify(held));
 		held = null;
 		dragOrigin = null;
 	}
