@@ -154,10 +154,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3d8fc31e183bd48cab81afb1187c7fbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  edge: {fileID: 0}
-  poly: {fileID: 0}
+  edges: []
+  polys: []
   lrs: []
-  mf: {fileID: 0}
+  mfs: []
+  vertices: []
+  lines: []
+  changed: 0
 --- !u!23 &1135588172
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -302,10 +305,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3d8fc31e183bd48cab81afb1187c7fbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  edge: {fileID: 0}
-  poly: {fileID: 0}
+  edges:
+  - {fileID: 1501597082}
+  polys:
+  - {fileID: 1501597081}
   lrs: []
-  mf: {fileID: 0}
+  mfs:
+  - {fileID: 1501597085}
+  vertices: []
+  lines: []
+  changed: 0
 --- !u!60 &1501597081
 PolygonCollider2D:
   m_ObjectHideFlags: 0
@@ -513,8 +522,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1e1f7b75f55e54495841d4faca9bb33a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  overString: 
-  hoverString: 
-  heldString: 
+  overInfo: 
+  hoverInfo: 
+  heldInfo: 
+  selectionsInfo: 
   dragging: 0
   lastClick: 0

@@ -1,101 +1,130 @@
 ﻿using System;
-using System.Linq;
+using System.Collections.Generic;
 using UnityEngine;
 
-
-public interface IInstructionExecutor {
-	void Click(IInstructibleElement element);
-	void DblClick(IInstructibleElement element);
-	void StartDrag(IInstructibleElement element);
-	void StopDrag(IInstructibleElement element);
-	void Rotate(IInstructibleElement element);
-	void Delete(IInstructibleElement element);
-	IInstructibleElement Despecify(IInstructibleElement element); // meant to reduce a transient element to the thing it represents
+public enum ElementType {
+	SHAPE = 0,
+	CONSTRUCTION = 1,
+	TRANSIENT = 2
 }
 
 public interface IInstructibleElement {
-	IInstructionExecutor executor { get; }
+	ElementType type { get; }
+	float priority { get; }
+	IEnumerable<IInstructibleElement> dependencies { get; }
+	// should handle being passed any element of dependencies, and *remove all references to the dependency*
+	// so they can can be disposed of by GC
+	void Orphan(IInstructibleElement dependency);
 	void Draw(float radius); // true if replace cursor, false otherwise
 }
 
 public interface IInstructiblePoint : IInstructibleElement {
 	Vector2 position { get; }
 }
+public interface IPositionableElement : IInstructibleElement {
+	Vector2 position { get;  set; }
+}
 
 [Serializable]
-public class Point : IInstructiblePoint {
-	public IInstructionExecutor executor { get; set; }
-	public Transform parent;
+public class Point : IInstructiblePoint, IPositionableElement {
+	public ElementType type { get; set; }
+	public float priority { get => 2; }
+	public Shape parent; // If ElementType.CONSTRUCTION, the transform reference origin. If ElementType.SHAPE, the shape of which I am a vertex
 	public Vector2 localPosition;
 	public Vector2 position {
-		get => parent?.TransformPoint(localPosition) ?? localPosition;
-		set => localPosition = parent?.InverseTransformPoint(value) ?? value;
+		get => parent?.monoBehaviour.transform.TransformPoint(localPosition) ?? localPosition;
+		set => localPosition = parent?.monoBehaviour.transform.InverseTransformPoint(value) ?? value;
 	}
-	public Point(Transform parent, Vector2 position, bool inWorldSpace = true, IInstructionExecutor executor = null) {
-		this.executor = executor;
+	public IEnumerable<IInstructibleElement> dependencies { get => parent == null ? new IInstructibleElement[] { parent } : new IInstructibleElement[0]; }
+	public void Orphan(IInstructibleElement dependency) {
+		localPosition = position;
+		parent = null;
+	}
+	public Point(Vector2 position, ElementType type = ElementType.CONSTRUCTION) {
+		this.type = type;
+		this.parent = null;
+		this.localPosition = position;
+	}
+	public Point(Shape parent, Vector2 position, ElementType type, bool inWorldSpace = true) {
+		this.type = type;
 		this.parent = parent;
 		if (inWorldSpace)
-			this.localPosition = position;
-		else
 			this.position = position;
+		else
+			this.localPosition = position;
 	}
-	public Point(EditableShape shape, Vector2 position, bool inWorldSpace = false) : this(shape.transform, position, inWorldSpace, shape) { }
+	public Point(EditableShape shape, Vector2 position, ElementType type, bool inWorldSpace = true) : this(shape.shape, position, type, inWorldSpace) { }
 	public void Draw(float radius) => ShapeEditorHints.SquareAt(position, radius, 270);
-	public override bool Equals(object obj) => obj != null && obj is Point && obj.GetHashCode() == GetHashCode();
-	public override int GetHashCode() => Utility.Hash(executor, parent, localPosition);
 }
 
 [Serializable]
 public class Line : IInstructibleElement {
-	public IInstructionExecutor executor { get; set; }
+	public ElementType type { get; set; }
+	public float priority { get => 1; }
+	public IEnumerable<IInstructibleElement> dependencies { get => new IInstructibleElement[] { a, b }; }
+	public void Orphan(IInstructibleElement dependency) {
+		if (dependency == a) {
+			a = new Point(a.position);
+			ShapeEditor.instance.Register(a);
+		} else {
+			b = new Point(b.position);
+			ShapeEditor.instance.Register(a);
+		}
+	}
+	public Shape parent { get; set; } // only used if ElementType.SHAPE
 	public IInstructiblePoint a;
 	public IInstructiblePoint b;
 	public Vector2 dir { get => (a.position - b.position).normalized; }
 	public Vector2 perp { get => Vector2.Perpendicular(dir); }
-	public Line(IInstructiblePoint a, IInstructiblePoint b, IInstructionExecutor executor = null) {
+	public Line(IInstructiblePoint a, IInstructiblePoint b, ElementType type = ElementType.CONSTRUCTION) {
+		this.type = type;
 		this.a = a;
 		this.b = b;
-		this.executor = executor ?? a.executor;
-		if (executor == null && a.executor != b.executor)
-			throw new ArgumentException("Constitutent points' executors are not the same, but no override was given.");
 	}
 	public void Draw(float radius) => ShapeEditorHints.Segments(a.position, b.position);
-	public override bool Equals(object obj) => obj != null && obj is Line && obj.GetHashCode() == GetHashCode();
-	public override int GetHashCode() => Utility.Hash(executor, a, b);
+	public PointOnLine PointOnNear(Vector2 position) {
+		Vector2 dir = b.position - a.position;
+		Vector2 disp = position - a.position;
+		float param = Vector2.Dot(dir, disp) / dir.sqrMagnitude; // 0-1 between a-b
+		return new PointOnLine(this, param);
+	}
 }
 
 [Serializable]
-public class Shape : IInstructibleElement {
-	public IInstructionExecutor executor { get => shape; }
-	public EditableShape shape;
+public class Shape : IInstructibleElement, IPositionableElement {
+	public ElementType type { get => ElementType.SHAPE; }
+	public float priority { get => 0; }
+	public IEnumerable<IInstructibleElement> dependencies { get => new IInstructibleElement[0]; }
+	public void Orphan(IInstructibleElement dependent) { }
+	public EditableShape monoBehaviour;
+	public Vector2 position { get => monoBehaviour.transform.position;  set => monoBehaviour.transform.position = value; }
 	public Shape(EditableShape shape) {
-		this.shape = shape;
+		monoBehaviour = shape;
 	}
 	public void Draw(float radius) {
-		EditableShape shape = this.shape; // because the lambda can't access instance members of "this"
-		ShapeEditorHints.Path(shape.positions);
+		EditableShape shape = monoBehaviour; // because the lambda can't access instance members of "this"
+		ShapeEditorHints.ClosedPath(shape.positions);
 	}
-	public override bool Equals(object obj) => obj != null && obj is Shape && ((Shape)obj).shape == shape;
-	public override int GetHashCode() => shape.GetHashCode();
 }
 
 [Serializable]
 public struct PointOnLine : IInstructiblePoint {
-	public IInstructionExecutor executor { get; set; }
+	public ElementType type { get; set; }
+	public float priority { get => 2; }
+	public IEnumerable<IInstructibleElement> dependencies { get => new IInstructibleElement[] { line }; }
+	public void Orphan(IInstructibleElement dependent) { line = null; ShapeEditor.instance.Deregister(this); }
 	public Line line;
 	public float parameter;
 	public Vector2 position { get => line.a.position + (line.b.position - line.a.position) * parameter; }
-	public PointOnLine(Line line, float parameter) {
+	public PointOnLine(Line line, float parameter, ElementType type = ElementType.CONSTRUCTION) {
+		this.type = type;
 		this.line = line;
 		this.parameter = parameter;
-		this.executor = line.executor;
 	}
-	public PointOnLine(IInstructiblePoint a, IInstructiblePoint b, float parameter, IInstructionExecutor executor = null) {
-		this.line = new Line(a, b, executor);
+	public PointOnLine(IInstructiblePoint a, IInstructiblePoint b, float parameter, ElementType type = ElementType.CONSTRUCTION) {
+		this.type = type;
+		this.line = new Line(a, b, type);
 		this.parameter = parameter;
-		this.executor = line.executor;
 	}
 	public void Draw(float radius) => ShapeEditorHints.Segments(position + line.perp * radius, position - line.perp * radius);
-	public override bool Equals(object obj) => obj != null && obj is PointOnLine && obj.GetHashCode() == GetHashCode();
-	public override int GetHashCode() => Utility.Hash(executor, line); // note parameter is not hashed
 }
