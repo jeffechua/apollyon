@@ -21,6 +21,12 @@ public interface IInstructibleElement {
 public interface IInstructiblePoint : IInstructibleElement {
 	Vector2 position { get; }
 }
+public interface IInstructibleLine : IInstructibleElement {
+	Vector2 origin { get; }
+	Vector2 dir { get; } // normalized
+	Vector2 perp { get; }
+	Vector2 bounds { get; } // the line segment is (a-x*dir) -> (a*y*dir). ±infinity for a line. Length of segment is y-x
+}
 public interface IPositionableElement : IInstructibleElement {
 	Vector2 position { get;  set; }
 }
@@ -35,7 +41,7 @@ public class Point : IInstructiblePoint, IPositionableElement {
 		get => parent?.monoBehaviour.transform.TransformPoint(localPosition) ?? localPosition;
 		set => localPosition = parent?.monoBehaviour.transform.InverseTransformPoint(value) ?? value;
 	}
-	public IEnumerable<IInstructibleElement> dependencies { get => parent == null ? new IInstructibleElement[] { parent } : new IInstructibleElement[0]; }
+	public IEnumerable<IInstructibleElement> dependencies { get => parent == null ? new IInstructibleElement[0] : new IInstructibleElement[] { parent }; }
 	public void Orphan(IInstructibleElement dependency) {
 		localPosition = position;
 		parent = null;
@@ -58,7 +64,7 @@ public class Point : IInstructiblePoint, IPositionableElement {
 }
 
 [Serializable]
-public class Line : IInstructibleElement {
+public class Line : IInstructibleElement, IInstructibleLine {
 	public ElementType type { get; set; }
 	public float priority { get => 1; }
 	public IEnumerable<IInstructibleElement> dependencies { get => new IInstructibleElement[] { a, b }; }
@@ -74,8 +80,10 @@ public class Line : IInstructibleElement {
 	public Shape parent { get; set; } // only used if ElementType.SHAPE
 	public IInstructiblePoint a;
 	public IInstructiblePoint b;
-	public Vector2 dir { get => (a.position - b.position).normalized; }
+	public Vector2 origin { get => a.position; }
+	public Vector2 dir { get => (b.position - a.position).normalized; }
 	public Vector2 perp { get => Vector2.Perpendicular(dir); }
+	public Vector2 bounds { get => new Vector2(0, (b.position-a.position).magnitude); }
 	public Line(IInstructiblePoint a, IInstructiblePoint b, ElementType type = ElementType.CONSTRUCTION) {
 		this.type = type;
 		this.a = a;
@@ -83,9 +91,8 @@ public class Line : IInstructibleElement {
 	}
 	public void Draw(float radius) => ShapeEditorHints.Segments(a.position, b.position);
 	public PointOnLine PointOnNear(Vector2 position) {
-		Vector2 dir = b.position - a.position;
-		Vector2 disp = position - a.position;
-		float param = Vector2.Dot(dir, disp) / dir.sqrMagnitude; // 0-1 between a-b
+		Vector2 disp = position - origin;
+		float param = Vector2.Dot(dir, disp) / bounds.y; // 0-1 between a-b
 		return new PointOnLine(this, param);
 	}
 }

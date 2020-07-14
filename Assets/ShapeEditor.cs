@@ -83,7 +83,7 @@ public class ShapeEditor : MonoBehaviour {
 		if (Input.GetAxis("Mouse ScrollWheel") != 0)
 			if (hovering)
 				Rotate(hover);
-		
+
 		if (dragQueue.Count > 0) {
 			List<DragQueueEntry> shapes = dragQueue.FindAll((e) => e.element is Shape);
 			List<DragQueueEntry> loneVertices = dragQueue.FindAll(delegate (DragQueueEntry e) {
@@ -100,20 +100,44 @@ public class ShapeEditor : MonoBehaviour {
 
 	}
 
+	const float pointRadius = 0.2f;
+	const float lineRadius = 0.1f;
+	public List<IInstructibleElement> OverlapPointAll (Vector2 position) {
+		List<IInstructibleElement> hits = new List<IInstructibleElement>();
+		foreach(IInstructibleElement element in registry.Keys) {
+			if(Utility.TryCast(element, out IInstructiblePoint point)) {
+				if ((point.position - position).sqrMagnitude <= pointRadius * pointRadius)
+					hits.Add(point);
+			}else if(Utility.TryCast(element, out IInstructibleLine line)) {
+				Vector2 offset = position - line.origin;
+				float perpOffset = Vector2.Dot(offset, line.perp);
+				float paraOffset = Vector2.Dot(offset, line.dir);
+				if (Mathf.Abs(perpOffset) <= lineRadius && paraOffset <= line.bounds.y && paraOffset >= line.bounds.x)
+					hits.Add(line);
+			}else if(Utility.TryCast(element, out Shape shape)) {
+				Collider2D[] cols = shape.monoBehaviour.GetComponents<Collider2D>();
+				if (cols.Any((col) => col.OverlapPoint(position)))
+					hits.Add(shape);
+			}
+		}
+		return hits;
+	}
+
 	public void CastHover() {
 		hover = null;
 		over = null;
-		Physics2D.OverlapPointAll(mousePosition).FirstOrDefault(delegate (Collider2D col) {
-			EditableShape shape = col.GetComponent<EditableShape>();
-			IInstructiblePoint returned = shape.GetHovered();
-			if (over == null) over = returned;
-			if (returned == null || ((Despecify(returned) ?? returned) == (Despecify(held) ?? held)))
-				return false;
-			else {
-				hover = returned;
-				return true;
-			}
-		});
+		List<IInstructibleElement> hits = OverlapPointAll(mousePosition);
+		IOrderedEnumerable<IInstructibleElement> ordered = hits.OrderByDescending((hit) => hit.priority);
+		foreach(IInstructibleElement hit in ordered) {
+			// Set over regardless
+			if (over == null) over = Specify(hit, mousePosition);
+			// Filters
+			if (hit == Despecify(held))
+				continue;
+			// Set hover if filters pass
+			hover = Specify(hit, mousePosition);
+			break;
+		}
 	}
 
 	public void Register(params IInstructibleElement[] elements) {
@@ -142,12 +166,13 @@ public class ShapeEditor : MonoBehaviour {
 
 	void Click() {
 		if (shifted) {
-			if (overing && over.Equals(held)) {
-				IInstructibleElement element = Despecify(held);
-				if (selections.Any((selection) => selection.Equals(element)))
-					selections.Remove(element);
+			IInstructibleElement despeccOver = Despecify(over);
+			IInstructibleElement despeccHeld = Despecify(held);
+			if (overing && despeccOver == despeccHeld) {
+				if (selections.Any((selection) => selection == despeccHeld))
+					selections.Remove(despeccHeld);
 				else
-					selections.Add(element);
+					selections.Add(despeccHeld);
 			}
 			held = null;
 		} else {
@@ -198,10 +223,11 @@ public class ShapeEditor : MonoBehaviour {
 
 	void Delete() {
 		List<IInstructibleElement> targets = selections.Count > 0 ? selections : (over != null ? new List<IInstructibleElement> { Despecify(over) } : new List<IInstructibleElement>());
-		foreach (IInstructibleElement target in targets) {
+		IOrderedEnumerable<IInstructibleElement> ordered = targets.OrderByDescending((target) => Utility.CalculateDependencyDepth(target));
+		foreach (IInstructibleElement target in ordered) {
 			switch (target.type) {
 				case ElementType.SHAPE:
-					if (Utility.TryCast(target, out Point vertex))
+					if (Utility.TryCast(target, out Point vertex) && registry.ContainsKey(vertex)) // a vertex may be deleted by line
 						vertex.parent.monoBehaviour.DeleteVertex(vertex);
 					else if (Utility.TryCast(target, out Line line))
 						line.parent.monoBehaviour.DeleteLine(line);
@@ -222,7 +248,7 @@ public class ShapeEditor : MonoBehaviour {
 			return point;
 		} else if (Utility.TryCast(element, out Shape shape))
 			return new Point(shape.monoBehaviour, position, ElementType.TRANSIENT, true);
-		return Utility.TryCast(element, out Point p) ? p :  new Point(position);
+		return Utility.TryCast(element, out Point p) ? p : new Point(position);
 	}
 	public IInstructibleElement Despecify(IInstructibleElement element) {
 		if (element == null || element.type != ElementType.TRANSIENT)
@@ -253,5 +279,38 @@ public class ShapeEditor : MonoBehaviour {
 			mouseStartWorldPos = snappedMousePos,
 			selfStartPos = element.position
 		});
+	}
+}
+
+public static class Utility {
+	static string[] elementTypeSymbols = new string[] { "S", "C", "T" };
+	public static bool TryCast<T>(object obj, out T result)
+		=> TryCast(obj, out result, out bool success);
+	public static bool TryCast<T>(object obj, out T result, out bool success) {
+		if (obj is T) {
+			result = (T)obj;
+			success = true;
+		} else {
+			result = default(T);
+			success = false;
+		}
+		return success;
+	}
+	public static int Hash(params object[] objs) {
+		unchecked {
+			int hash = 17;
+			foreach (object obj in objs)
+				hash = hash * 23 + (obj?.GetHashCode() ?? 0);
+			return hash;
+		}
+	}
+	public static int CalculateDependencyDepth(IInstructibleElement element) {
+		return element.dependencies.Count() > 0 ? element.dependencies.Select((dep) => CalculateDependencyDepth(dep)).Max() + 1 : 0;
+	}
+	public static string Identify(IInstructibleElement element) {
+		if (element == null)
+			return "";
+		IInstructibleElement despecc = ShapeEditor.instance.Despecify(element);
+		return elementTypeSymbols[(int)element.type] + ":" + element.GetType() + (element.type != ElementType.TRANSIENT ? ":" + element.GetHashCode() : " (" + Identify(despecc) + ")");
 	}
 }
