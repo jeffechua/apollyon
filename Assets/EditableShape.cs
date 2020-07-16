@@ -20,8 +20,7 @@ public class EditableShape : MonoBehaviour {
 
 	public bool changed;
 
-	public int NextIndex(int i) => (i + 1) % (vertices.Count);
-	public int PrevIndex(int i) => (i + vertices.Count - 1) % (vertices.Count);
+	public int LoopIndex(int i) => (i + vertices.Count) % (vertices.Count);
 
 	void Start() {
 		shape = new Shape(this);
@@ -30,7 +29,7 @@ public class EditableShape : MonoBehaviour {
 
 	// Update is called once per frame
 	void Update() {
-		if (vertices.Count <= 1) {
+		if (vertices.Count <= 2) {
 			Reset();
 			changed = true;
 		}
@@ -63,10 +62,9 @@ public class EditableShape : MonoBehaviour {
 		InsertVertex(i + 1, ShapeEditor.instance.snappedMousePos);
 		RemoveLine(line);
 		AddLine(vertices[i], vertices[i + 1]);
-		AddLine(vertices[i + 1], vertices[NextIndex(i + 1)]);
+		AddLine(vertices[i + 1], vertices[LoopIndex(i + 2)]);
 		if (thenGrab) {
-			ShapeEditor.instance.CastHover();
-			ShapeEditor.instance.held = ShapeEditor.instance.hover;
+			ShapeEditor.instance.held = vertices[i+1];
 		}
 		changed = true;
 	}
@@ -76,7 +74,7 @@ public class EditableShape : MonoBehaviour {
 		if (i != -1) {
 			List<Line> ls = lines.FindAll((l) => l.dependencies.Contains(vertices[i]));
 			RemoveLine(ls[0]); RemoveLine(ls[1]); RemoveVertex(vertices[i]);
-			AddLine(vertices[PrevIndex(i)], vertices[i]);
+			AddLine(vertices[LoopIndex(i-1)], vertices[LoopIndex(i)]);
 		} else
 			Reset();
 		changed = true;
@@ -86,7 +84,7 @@ public class EditableShape : MonoBehaviour {
 		int i = vertices.IndexOf((Point)line.a);
 		List<Line> ls = lines.FindAll((l) => l.dependencies.Contains(line.a) || l.dependencies.Contains(line.b));
 		RemoveLine(ls[0]); RemoveLine(ls[1]); RemoveLine(ls[2]); RemoveVertex((Point)line.a); RemoveVertex((Point)line.b);
-		AddLine(vertices[PrevIndex(i)], vertices[i]);
+		AddLine(vertices[LoopIndex(i-1)], vertices[LoopIndex(i)]);
 		changed = true;
 	}
 
@@ -118,6 +116,7 @@ public class EditableShape : MonoBehaviour {
 		lines[0].parent = shape; lines[1].parent = shape; lines[2].parent = shape;
 		ShapeEditor.instance.Register(vertices.ToArray());
 		ShapeEditor.instance.Register(lines.ToArray());
+		changed = true;
 	}
 
 }

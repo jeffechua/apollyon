@@ -3,6 +3,18 @@ using System.Linq;
 using System.Collections.Generic;
 using UnityEngine;
 
+[Serializable]
+public enum MouseMode {
+	INACTIVE,
+	EDIT,
+	CONSTRUCTION
+}
+[Serializable]
+public enum DragMode {
+	SINGLE,
+	MULTI
+}
+
 // NB: there should only be one EdgeEditor in the scene
 // EditableShapes should register hovers to EdgeEditor in OnMouseOver,
 // but actions can only be taken in the Update() of EdgeEditor.
@@ -11,6 +23,9 @@ public class ShapeEditor : MonoBehaviour {
 	public static ShapeEditor instance;
 
 	// The state of the mouse
+	public MouseMode mouseMode;
+	public DragMode dragMode;
+	public int activeMouseButton { get => mouseMode == MouseMode.CONSTRUCTION ? 1 : 0; }
 	public string overInfo;
 	public string hoverInfo;
 	public string heldInfo;
@@ -23,8 +38,8 @@ public class ShapeEditor : MonoBehaviour {
 	public bool overing { get => over != null; }
 	public bool hovering { get => hover != null; }
 	public bool holding { get => held != null; }
-	public bool holdingReal { get => holding && Despecify(held).type != ElementType.TRANSIENT; }
 	public bool dragging;
+	public IInstructibleElement reassignVictim;
 	public Vector2 mousePosition { get => Camera.main.ScreenToWorldPoint(Input.mousePosition); }
 	public Vector2 snappedMousePos { get => hover?.position ?? mousePosition; }
 
@@ -37,7 +52,9 @@ public class ShapeEditor : MonoBehaviour {
 	// This dictionary serves two purposes:
 	//  1) Its keys are a list of all registered (i.e. persistent) IInstructibleElements.
 	//  2) The values store each key's dependents. When something is registered, its will be added to its dependencies' dependents list.
+	// Elements are responsible for keeping track of what they're dependent on. The registry keeps track of what things each element is a dependency of
 	public Dictionary<IInstructibleElement, List<IInstructibleElement>> registry = new Dictionary<IInstructibleElement, List<IInstructibleElement>>();
+	List<IInstructibleElement> cancelQueue = new List<IInstructibleElement>();
 
 	void Awake() {
 		instance = this;
@@ -54,70 +71,85 @@ public class ShapeEditor : MonoBehaviour {
 		heldInfo = Utility.Identify(held);
 		selectionsInfo = selections.Count > 0 ? selections.Aggregate("", (str, elm) => str + ", " + Utility.Identify(elm)).Substring(2) : "";
 
-		if (Input.GetMouseButtonDown(0)) {
-			held = hover ?? new Point(mousePosition);
+		if (mouseMode == MouseMode.INACTIVE) {
+			if (Input.GetMouseButton(0))
+				mouseMode = MouseMode.EDIT;
+			else if (Input.GetMouseButton(1))
+				mouseMode = MouseMode.CONSTRUCTION;
+		}
+
+		if (Input.GetMouseButtonDown(activeMouseButton)) {
+			held = hover;
+			dragOrigin = new Point(snappedMousePos);
 			if (Time.time - lastClick <= dblClickMaxGap)
 				DblClick();
 		}
 
-		if (!dragging && holding && (mousePosition - held.position).magnitude > dragThresh) {
+		if (Input.GetMouseButtonUp(activeMouseButton)) {
+			if (dragging) {
+				StopDrag();
+				dragging = false;
+			} else {
+				Click();
+			}
+		}
+
+		if (!dragging && Input.GetMouseButton(activeMouseButton) && (mousePosition - dragOrigin.position).magnitude > dragThresh) {
 			hover = held; // temporary so snappedMousePos will work for this frame
 			StartDrag();
 			dragging = true;
 		}
 
-		if (Input.GetMouseButtonUp(0)) {
-			if (dragging) {
-				StopDrag();
-				dragging = false;
-			} else
-				Click();
-		}
-
 		if (Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace) || Input.GetKeyDown(KeyCode.D))
 			Delete();
 
-		if (Input.GetKeyDown(KeyCode.Escape))
-			Escape();
+		if (Input.GetKeyDown(KeyCode.Escape)) {
+			foreach (IInstructibleElement cancelee in cancelQueue)
+				Deregister(cancelee);
+			Release();
+		}
 
 		if (Input.GetAxis("Mouse ScrollWheel") != 0)
 			if (hovering)
 				Rotate(hover);
 
 		if (dragQueue.Count > 0) {
-			List<DragQueueEntry> shapes = dragQueue.FindAll((e) => e.element is Shape);
-			List<DragQueueEntry> loneVertices = dragQueue.FindAll(delegate (DragQueueEntry e) {
-				if (Utility.TryCast(e.element, out Point p) && !shapes.Any((s) => s.element == p.parent)) {
-					p.parent.monoBehaviour.changed = true;
-					return true;
-				}
-				return false;
-			});
-			IEnumerable<DragQueueEntry> filtered = shapes.Concat(loneVertices);
-			foreach (DragQueueEntry e in filtered)
-				e.element.position = e.selfStartPos + ShapeEditor.instance.snappedMousePos - e.mouseStartWorldPos;
+			IEnumerable<DragQueueEntry> filtered;
+			if (mouseMode == MouseMode.EDIT) {
+				filtered = dragQueue.FindAll((a) => !dragQueue.Any((b) => b.element == Utility.GetParent(a.element)));
+			} else {
+				filtered = dragQueue;
+			}
+			foreach (DragQueueEntry e in filtered) {
+				e.element.position = e.selfStartPos + snappedMousePos - dragOrigin.position;
+				if (Utility.GetParent(e.element) != null)
+					Utility.GetParent(e.element).monoBehaviour.changed = true;
+			}
 		}
+
+		if (!Input.GetMouseButton(0) && !Input.GetMouseButton(1))
+			mouseMode = MouseMode.INACTIVE;
 
 	}
 
 	const float pointRadius = 0.2f;
 	const float lineRadius = 0.1f;
-	public List<IInstructibleElement> OverlapPointAll (Vector2 position) {
+	public List<IInstructibleElement> OverlapPointAll(Vector2 position) {
 		List<IInstructibleElement> hits = new List<IInstructibleElement>();
-		foreach(IInstructibleElement element in registry.Keys) {
-			if(Utility.TryCast(element, out IInstructiblePoint point)) {
-				if ((point.position - position).sqrMagnitude <= pointRadius * pointRadius)
-					hits.Add(point);
-			}else if(Utility.TryCast(element, out IInstructibleLine line)) {
+		foreach (IInstructibleElement element in registry.Keys) {
+			if (Utility.TryCast(element, out Shape shape)) {
+				Collider2D[] cols = shape.monoBehaviour.GetComponents<Collider2D>();
+				if (cols.Any((col) => col.OverlapPoint(position)))
+					hits.Add(shape);
+			} else if (Utility.TryCast(element, out IInstructibleLine line)) {
 				Vector2 offset = position - line.origin;
 				float perpOffset = Vector2.Dot(offset, line.perp);
 				float paraOffset = Vector2.Dot(offset, line.dir);
 				if (Mathf.Abs(perpOffset) <= lineRadius && paraOffset <= line.bounds.y && paraOffset >= line.bounds.x)
 					hits.Add(line);
-			}else if(Utility.TryCast(element, out Shape shape)) {
-				Collider2D[] cols = shape.monoBehaviour.GetComponents<Collider2D>();
-				if (cols.Any((col) => col.OverlapPoint(position)))
-					hits.Add(shape);
+			} else if (Utility.TryCast(element, out IInstructiblePoint point)) {
+				if ((point.position - position).sqrMagnitude <= pointRadius * pointRadius)
+					hits.Add(point);
 			}
 		}
 		return hits;
@@ -128,12 +160,14 @@ public class ShapeEditor : MonoBehaviour {
 		over = null;
 		List<IInstructibleElement> hits = OverlapPointAll(mousePosition);
 		IOrderedEnumerable<IInstructibleElement> ordered = hits.OrderByDescending((hit) => hit.priority);
-		foreach(IInstructibleElement hit in ordered) {
+		foreach (IInstructibleElement hit in ordered) {
 			// Set over regardless
 			if (over == null) over = Specify(hit, mousePosition);
 			// Filters
-			if (hit == Despecify(held))
-				continue;
+			if (holding)
+				if (hit == Despecify(held) || hit.dependencies.Contains(Despecify(held))
+					|| held.dependencies.Contains(hit) || hit == Utility.GetParent(Despecify(held)))
+					continue;
 			// Set hover if filters pass
 			hover = Specify(hit, mousePosition);
 			break;
@@ -144,79 +178,156 @@ public class ShapeEditor : MonoBehaviour {
 		foreach (IInstructibleElement element in elements) {
 			foreach (IInstructibleElement dependency in element.dependencies) {
 				if (registry.TryGetValue(dependency, out List<IInstructibleElement> dependents))
-					dependents.Add(dependency);
+					dependents.Add(element);
 			}
 			registry.Add(element, new List<IInstructibleElement>());
 		}
 	}
 	public void Deregister(params IInstructibleElement[] elements) {
 		foreach (IInstructibleElement element in elements) {
-			// Inform parents I'm dead
-			foreach (IInstructibleElement dependency in element.dependencies) {
-				if (registry.TryGetValue(dependency, out List<IInstructibleElement> dependents))
-					dependents.Remove(dependency);
-			}
+			// Update the registry
+			foreach (IInstructibleElement dependency in element.dependencies)
+				if (registry.ContainsKey(dependency))
+					registry[dependency].Remove(element);
 			// Inform children they're orphaned
-			foreach (IInstructibleElement dependent in registry[element]) {
-				dependent.Orphan(element);
-			}
+			List<IInstructibleElement> dependents = new List<IInstructibleElement>(registry[element]); // because registry[elements] will change
+			foreach (IInstructibleElement dependent in dependents)
+				dependent.Handover(element, null);
 			registry.Remove(element);
 		}
 	}
+	public void TransformElement(IInstructibleElement resignee, IInstructibleElement inheritor) {
+		// Inform dependents of the handover
+		foreach (IInstructibleElement dependent in registry[resignee])
+			dependent.Handover(resignee, inheritor);
+		// Update the registry. Don't use Deregister since that orphans dependents.
+		foreach (IInstructibleElement dependency in resignee.dependencies)
+			if (registry.ContainsKey(dependency))
+				registry[dependency].Remove(dependency);
+		registry.Remove(resignee);
+		Register(inheritor);
+	}
 
 	void Click() {
-		if (shifted) {
-			IInstructibleElement despeccOver = Despecify(over);
-			IInstructibleElement despeccHeld = Despecify(held);
-			if (overing && despeccOver == despeccHeld) {
-				if (selections.Any((selection) => selection == despeccHeld))
-					selections.Remove(despeccHeld);
+		IInstructibleElement target = Despecify(held);
+		if (overing && Despecify(over) == Despecify(held)) {
+			if (shifted) {
+				if (selections.Any((selection) => selection == target))
+					selections.Remove(target);
 				else
-					selections.Add(despeccHeld);
+					selections.Add(target);
+			} else {
+				if (mouseMode == MouseMode.EDIT) {
+					if (Utility.TryCast(target, out ParallelLine pline, out bool isPline) |
+						(Utility.TryCast(target, out Line line) && line.type != ElementType.SHAPE)) {
+						if (isPline) pline.extrapolate = !pline.extrapolate;
+						else line.extrapolate = !line.extrapolate;
+					} else if (Utility.TryCast(target, out PointOnLine pol)) {
+						pol.parameterIsRatio = !pol.parameterIsRatio;
+					}
+				}
+				Release();
 			}
-			held = null;
-		} else {
-			// Click behaviour for held
-			Escape();
 		}
+		held = null;
 		lastClick = Time.time;
 	}
 
 	void DblClick() { // held is guaranteed to be real
-		if (Utility.TryCast(held, out PointOnLine pol)) {
-			if (pol.line.type == ElementType.SHAPE)
-				pol.line.parent.monoBehaviour.BreakEdge(pol.line, true);
+		IInstructibleElement target = Despecify(held);
+		if (mouseMode == MouseMode.EDIT) {
+			if (Utility.TryCast(target, out Line line) && line.type == ElementType.SHAPE)
+				line.parent.monoBehaviour.BreakEdge(line, true);
+		} else {
+			if (Utility.TryCast(target, out IInstructibleLine line)) {
+				PointOnLine pol = new PointOnLine(line, snappedMousePos, LineUtils.IsFinite(line));
+				Register(pol);
+				held = pol;
+			} else {
+				Utility.TryCast(target, out Point point);
+				Utility.TryCast(target, out Shape shape);
+				Point newPoint = new Point(shape ?? point?.parent ?? null, snappedMousePos, ElementType.CONSTRUCTION);
+				Register(newPoint);
+				held = newPoint;
+			}
 		}
+		lastClick = 0;
 	}
 
-	void Escape() {
+	void Release() {
+		foreach (IInstructibleElement element in cancelQueue) {
+			Deregister(element);
+		}
 		selections.Clear();
 		held = null;
 	}
 
 	void StartDrag() { // held is guaranteed to be non-null, but not necessarily real
-		List<IInstructibleElement> targets = selections.Count > 0 ? selections : new List<IInstructibleElement> { Despecify(held) };
-		dragOrigin = new Point(held.position);
-		foreach (IInstructibleElement target in targets) {
-			switch (target.type) {
-				case ElementType.SHAPE:
-					if (Utility.TryCast(target, out Point vertex)) {
-						PushToDragQueue(vertex);
-					} else if (Utility.TryCast(target, out Line line)) {
-						PushToDragQueue((Point)line.a);
-						PushToDragQueue((Point)line.b);
-					} else if (Utility.TryCast(target, out Shape shape)) {
-						PushToDragQueue(shape);
+		List<IInstructibleElement> targets;
+		if (selections.Count > 0) {
+			dragMode = DragMode.MULTI;
+			targets = selections;
+		} else {
+			dragMode = DragMode.SINGLE;
+			targets = new List<IInstructibleElement> { Despecify(held) };
+		}
+		if (mouseMode == MouseMode.EDIT) {
+			foreach (IInstructibleElement target in targets) {
+				if (Utility.TryCast(target, out IPositionableElement positionable)) {
+					PushToDragQueue(positionable);
+				} else if (Utility.TryCast(target, out Line line) && line.type == ElementType.SHAPE) {
+					PushToDragQueue((Point)line.a, (Point)line.b);
+				}
+			}
+		} else {
+			foreach (IInstructibleElement target in targets) {
+				if (Utility.TryCast(target, out IInstructibleLine line)) {
+					ParallelLine pLine = new ParallelLine(line, 0);
+					Register(pLine);
+					cancelQueue.Add(pLine);
+					PushToDragQueue(pLine);
+					if (dragMode == DragMode.SINGLE) {
+						PointOnLine displayPoint = new PointOnLine(pLine, snappedMousePos, true, ElementType.TRANSIENT);
+						held = displayPoint;
+						PushToDragQueue(displayPoint);
 					}
-					break;
-				case ElementType.CONSTRUCTION:
-					break;
+				} else if (Utility.TryCast(target, out IInstructiblePoint point)) {
+					Point newPoint = new Point(point.position, ElementType.CONSTRUCTION);
+					Line newLine = new Line(point, newPoint);
+					Register(newPoint, newLine);
+					PushToDragQueue(newPoint);
+					cancelQueue.Add(newLine); cancelQueue.Add(newPoint);
+					if (dragMode == DragMode.SINGLE) {
+						held = newPoint;
+						reassignVictim = newLine;
+					}
+				}
+			}
+			if(dragMode == DragMode.SINGLE && dragQueue.Count == 0) {
+				Point start = new Point(snappedMousePos, ElementType.CONSTRUCTION);
+				Point end = new Point(snappedMousePos, ElementType.CONSTRUCTION);
+				Line newLine = new Line(start, end);
+				Register(start, end, newLine);
+				PushToDragQueue(end);
+				cancelQueue.Add(start); cancelQueue.Add(end); cancelQueue.Add(newLine);
+				held = end;
+				reassignVictim = newLine;
 			}
 		}
 	}
 
 	void StopDrag() { // held is guaranteed to be non-null, but not necessarily real
+		if (reassignVictim != null && hovering && Utility.CanMakeDependentOn(reassignVictim, hover) && reassignVictim.TypecheckHandover(held, hover)) {
+			reassignVictim.Handover(held, hover);
+			registry[held].Remove(reassignVictim);
+			registry[hover].Add(reassignVictim);
+			if (registry[held].Count == 0)
+				Deregister(held);
+		}
+		reassignVictim = null;
+		dragMode = DragMode.SINGLE;
 		dragQueue.Clear();
+		cancelQueue.Clear();
 		held = null;
 		dragOrigin = null;
 	}
@@ -235,6 +346,7 @@ public class ShapeEditor : MonoBehaviour {
 						shape.monoBehaviour.Reset();
 					break;
 				case ElementType.CONSTRUCTION:
+					Deregister(target);
 					break;
 			}
 		}
@@ -242,13 +354,11 @@ public class ShapeEditor : MonoBehaviour {
 	}
 
 	public IInstructiblePoint Specify(IInstructibleElement element, Vector2 position) {
-		if (Utility.TryCast(element, out Line line)) {
-			PointOnLine point = line.PointOnNear(position);
-			point.type = ElementType.TRANSIENT;
-			return point;
+		if (Utility.TryCast(element, out IInstructibleLine line)) {
+			return new PointOnLine(line, position, LineUtils.IsFinite(line), ElementType.TRANSIENT);
 		} else if (Utility.TryCast(element, out Shape shape))
 			return new Point(shape.monoBehaviour, position, ElementType.TRANSIENT, true);
-		return Utility.TryCast(element, out Point p) ? p : new Point(position);
+		return Utility.TryCast(element, out IInstructiblePoint p) ? p : new Point(position);
 	}
 	public IInstructibleElement Despecify(IInstructibleElement element) {
 		if (element == null || element.type != ElementType.TRANSIENT)
@@ -264,22 +374,21 @@ public class ShapeEditor : MonoBehaviour {
 	public void Rotate(IInstructibleElement element)
 		=> transform.RotateAround(ShapeEditor.instance.snappedMousePos, Vector3.forward, Input.GetAxis("Mouse ScrollWheel") * rotateMultiplier);
 
-
-
-	// Helper functions for instructions
+	// Helper members for dragging
 	List<DragQueueEntry> dragQueue = new List<DragQueueEntry>();
 	struct DragQueueEntry {
 		public IPositionableElement element;
-		public Vector2 mouseStartWorldPos;
 		public Vector2 selfStartPos;
 	}
-	void PushToDragQueue(IPositionableElement element) {
-		dragQueue.Add(new DragQueueEntry {
-			element = element,
-			mouseStartWorldPos = snappedMousePos,
-			selfStartPos = element.position
-		});
+	void PushToDragQueue(params IPositionableElement[] elements) {
+		foreach (IPositionableElement element in elements) {
+			dragQueue.Add(new DragQueueEntry {
+				element = element,
+				selfStartPos = element.position
+			});
+		}
 	}
+
 }
 
 public static class Utility {
@@ -307,10 +416,33 @@ public static class Utility {
 	public static int CalculateDependencyDepth(IInstructibleElement element) {
 		return element.dependencies.Count() > 0 ? element.dependencies.Select((dep) => CalculateDependencyDepth(dep)).Max() + 1 : 0;
 	}
+	public static IInstructibleElement[] GetAllDependencies(IInstructibleElement element) {
+		return element.dependencies.Aggregate(element.dependencies.ToArray(),
+			(arr, dependency) => arr.Concat(dependency.dependencies).ToArray());
+	}
+	public static bool CanMakeDependentOn(IInstructibleElement dependent, IInstructibleElement dependency) {
+		// return GetAllDependencies(dependency).Contains(dependent);
+		Queue<IInstructibleElement> queue = new Queue<IInstructibleElement>(dependency.dependencies);
+		while (queue.Count > 0) {
+			IInstructibleElement element = queue.Dequeue();
+			if (element == dependent)
+				return false;
+			foreach (IInstructibleElement d in element.dependencies)
+				queue.Enqueue(d);
+		}
+		return true;
+	}
 	public static string Identify(IInstructibleElement element) {
 		if (element == null)
 			return "";
 		IInstructibleElement despecc = ShapeEditor.instance.Despecify(element);
 		return elementTypeSymbols[(int)element.type] + ":" + element.GetType() + (element.type != ElementType.TRANSIENT ? ":" + element.GetHashCode() : " (" + Identify(despecc) + ")");
+	}
+	public static Shape GetParent(IInstructibleElement element) {
+		if (TryCast(element, out Point point))
+			return point.parent;
+		else if (TryCast(element, out Line line))
+			return line.parent;
+		return null;
 	}
 }
