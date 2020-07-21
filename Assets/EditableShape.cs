@@ -111,8 +111,8 @@ public class EditableShape : MonoBehaviour {
 	public void Reset() {
 		ShapeEditor.instance.Deregister(lines.ToArray());
 		ShapeEditor.instance.Deregister(vertices.ToArray());
-		vertices = new List<Point> { new Point(this, Vector2.left, ElementType.SHAPE, false), new Point(this, Vector2.right, ElementType.SHAPE, false), new Point(this, Vector2.up, ElementType.SHAPE, false) };
-		lines = new List<Line> { new Line(vertices[0], vertices[1], ElementType.SHAPE), new Line(vertices[1], vertices[2], ElementType.SHAPE), new Line(vertices[2], vertices[0], ElementType.SHAPE) };
+		vertices = new List<Point> { new Point(this, Vector2.left, ElementType.SHAPE, false), new Point(this, Vector2.up, ElementType.SHAPE, false), new Point(this, Vector2.right, ElementType.SHAPE, false), new Point(this, Vector2.down, ElementType.SHAPE, false) };
+		lines = new List<Line> { new Line(vertices[0], vertices[1], ElementType.SHAPE), new Line(vertices[1], vertices[2], ElementType.SHAPE), new Line(vertices[2], vertices[3], ElementType.SHAPE), new Line(vertices[3], vertices[0], ElementType.SHAPE) };
 		lines[0].parent = shape; lines[1].parent = shape; lines[2].parent = shape;
 		ShapeEditor.instance.Register(vertices.ToArray());
 		ShapeEditor.instance.Register(lines.ToArray());
